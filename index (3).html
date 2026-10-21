@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Змейка 3D — от первого лица</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; overflow: hidden;
+    background: #05050a;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #e0e0e0; user-select: none; -webkit-user-select: none;
+    touch-action: none;
+  }
+  #scene { position: fixed; inset: 0; }
+
+  /* HUD */
+  .hud {
+    position: fixed; top: 10px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 25px;
+    font-size: 1rem; font-weight: bold; pointer-events: none;
+    text-shadow: 0 0 8px #000, 0 0 3px #000; z-index: 5;
+  }
+  .hud span { color: #4ecca3; }
+
+  .crosshair {
+    position: fixed; top: 50%; left: 50%;
+    width: 6px; height: 6px; margin: -3px 0 0 -3px;
+    border-radius: 50%; background: rgba(78,204,163,0.7);
+    box-shadow: 0 0 10px #4ecca3; pointer-events: none; z-index: 4;
+  }
+
+  /* D-pad */
+  .dpad {
+    position: fixed; bottom: 14px; right: 14px;
+    display: grid;
+    grid-template-columns: repeat(3, 58px);
+    grid-template-rows: repeat(3, 58px);
+    gap: 6px; z-index: 10;
+  }
+  .dpad button {
+    background: rgba(78,204,163,0.12);
+    border: 2px solid rgba(78,204,163,0.45);
+    border-radius: 12px; color: #4ecca3;
+    font-size: 1.4rem; font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    touch-action: manipulation;
+    transition: background .1s, transform .05s;
+  }
+  .dpad button:active { background: rgba(78,204,163,0.45); transform: scale(.92); }
+  .dpad .up    { grid-column: 2; grid-row: 1; }
+  .dpad .left  { grid-column: 1; grid-row: 2; }
+  .dpad .right { grid-column: 3; grid-row: 2; }
+  .dpad .down  { grid-column: 2; grid-row: 3; }
+  .dpad .pause {
+    grid-column: 2; grid-row: 2; font-size: 1rem;
+    background: rgba(255,77,109,0.12);
+    border-color: rgba(255,77,109,0.45); color: #ff4d6d;
+  }
+
+  .restart {
+    position: fixed; bottom: 14px; left: 14px;
+    padding: 12px 18px; font-size: .9rem; font-weight: bold;
+    color: #05050a; background: #4ecca3; border: none;
+    border-radius: 10px; z-index: 10;
+    box-shadow: 0 0 12px rgba(78,204,163,.4);
+  }
+  .restart:active { transform: scale(.95); }
+
+  /* Оверлей */
+  .overlay {
+    position: fixed; inset: 0; z-index: 20;
+    display: none; align-items: center; justify-content: center;
+    flex-direction: column; text-align: center; padding: 20px;
+    background: rgba(0,0,0,.8); backdrop-filter: blur(4px);
+  }
+  .overlay.show { display: flex; }
+  .overlay h2 { font-size: 1.6rem; margin-bottom: 12px; color: #4ecca3; }
+  .overlay p { font-size: .95rem; color: #bbb; max-width: 320px; line-height: 1.5; }
+  .overlay .big {
+    font-size: 2.2rem; color: #ff4d6d; margin: 10px 0;
+  }
+
+  @media (min-width: 900px) and (hover: hover) {
+    .dpad { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="scene"></div>
+<div class="hud">
+  <div>Счёт: <span id="score">0</span></div>
+  <div>Длина: <span id="len">3</span></div>
+  <div>Рекорд: <span id="best">0</span></div>
+</div>
+<div class="crosshair"></div>
+
+<div class="dpad">
+  <button class="up"    data-dir="up">▲</button>
+  <button class="left"  data-dir="left">◀</button>
+  <button class="pause" data-dir="pause">⏸</button>
+  <button class="right" data-dir="right">▶</button>
+  <button class="down"  data-dir="down">▼</button>
+</div>
+<button class="restart" id="restart">Заново</button>
+
+<div class="overlay" id="overlay">
+  <h2 id="ovTitle">Готов?</h2>
+  <p id="ovText">Ты — змейка. Собирай красные сферы, не врезайся в стены и в себя.</p>
+  <p class="big" id="ovScore" style="display:none"></p>
+  <p id="ovHint" style="margin-top:14px;color:#4ecca3;">Нажми ⏸ или Пробел, чтобы начать</p>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ===== Настройки =====
+const CELL = 1;              // размер клетки
+const COLS = 21;             // ширина поля
+const ROWS = 21;             // глубина поля
+const SPEED_START = 0.20;    // сек на шаг
+const SPEED_MIN = 0.09;
+
+const scoreEl = document.getElementById('score');
+const lenEl   = document.getElementById('len');
+const bestEl  = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const ovTitle = document.getElementById('ovTitle');
+const ovText  = document.getElementById('ovText');
+const ovScore = document.getElementById('ovScore');
+const ovHint  = document.getElementById('ovHint');
+
+let best = Number(localStorage.getItem('snake3dBest') || 0);
+bestEl.textContent = best;
+
+// ===== Сцена =====
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05050a);
+scene.fog = new THREE.Fog(0x05050a, 8, 26);
+
+const camera = new THREE.PerspectiveCamera(78, innerWidth / innerHeight, 0.1, 200);
+camera.rotation.order = 'YXZ';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.getElementById('scene').appendChild(renderer.domElement);
+
+// ===== Свет =====
+scene.add(new THREE.AmbientLight(0x334455, 1.2));
+const headLight = new THREE.PointLight(0x4ecca3, 2.2, 14, 1.6);
+scene.add(headLight);
+const backLight = new THREE.PointLight(0xff4d6d, 1.2, 10, 1.6);
+scene.add(backLight);
+
+// ===== Пол и стены =====
+const halfW = (COLS * CELL) / 2;
+const halfD = (ROWS * CELL) / 2;
+
+// пол
+const floorGeo = new THREE.PlaneGeometry(COLS * CELL, ROWS * CELL, COLS, ROWS);
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x0d1a1a, roughness: 0.9, metalness: 0.1 });
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+
+// сетка на полу
+const grid = new THREE.GridHelper(COLS * CELL, COLS, 0x4ecca3, 0x123333);
+grid.position.y = 0.01;
+grid.material.opacity = 0.25;
+grid.material.transparent = true;
+scene.add(grid);
+
+// стены
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0x123333, emissive: 0x0a2222, emissiveIntensity: 0.6,
+  roughness: 0.7, metalness: 0.3, side: THREE.DoubleSide
+});
+const wallH = 2.2;
+function addWall(w, d, x, z) {
+  const g = new THREE.BoxGeometry(w, wallH, d);
+  const m = new THREE.Mesh(g, wallMat);
+  m.position.set(x, wallH / 2, z);
+  scene.add(m);
+}
+addWall(COLS * CELL + 1, 1, 0, -halfD - 0.5);
+addWall(COLS * CELL + 1, 1, 0,  halfD + 0.5);
+addWall(1, ROWS * CELL + 1, -halfW - 0.5, 0);
+addWall(1, ROWS * CELL + 1,  halfW + 0.5, 0);
+
+// ===== Змейка =====
+let snake, dir, pendingDir, food, score, stepTime, acc, running, gameOver, lastTime;
+
+const bodyGeo = new THREE.SphereGeometry(0.42, 18, 14);
+const headGeo = new THREE.SphereGeometry(0.5, 20, 16);
+const headMat = new THREE.MeshStandardMaterial({ color: 0x4ecca3, emissive: 0x2a8f6e, emissiveIntensity: 0.6, roughness: 0.35 });
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2fae86, emissive: 0x0f4a38, emissiveIntensity: 0.4, roughness: 0.5 });
+
+const foodGeo = new THREE.SphereGeometry(0.38, 18, 14);
+const foodMat = new THREE.MeshStandardMaterial({ color: 0xff4d6d, emissive: 0xff4d6d, emissiveIntensity: 1.2, roughness: 0.3 });
+
+let headMesh, bodyMeshes = [], foodMesh;
+
+// глазки на голове (видны в зеркале сцены — для атмосферы)
+let eyes = [];
+
+function cellToWorld(cx, cy) {
+  return new THREE.Vector3(
+    (cx - (COLS - 1) / 2) * CELL,
+    0.5,
+    (cy - (ROWS - 1) / 2) * CELL
+  );
+}
+
+function clearMeshes() {
+  if (headMesh) scene.remove(headMesh);
+  bodyMeshes.forEach(m => scene.remove(m));
+  bodyMeshes = [];
+  if (foodMesh) scene.remove(foodMesh);
+}
+
+function init() {
+  clearMeshes();
+  snake = [];
+  const cx = Math.floor(COLS / 2), cy = Math.floor(ROWS / 2);
+  for (let i = 0; i < 3; i++) snake.push({ x: cx - i, y: cy });
+
+  dir = { x: 1, y: 0 };
+  pendingDir = { x: 1, y: 0 };
+  score = 0;
+  stepTime = SPEED_START;
+  acc = 0;
+  running = false;
+  gameOver = false;
+  lastTime = performance.now();
+
+  scoreEl.textContent = 0;
+  lenEl.textContent = snake.length;
+
+  // голова
+  headMesh = new THREE.Mesh(headGeo, headMat);
+  scene.add(headMesh);
+
+  // тело
+  for (let i = 1; i < snake.length; i++) {
+    const m = new THREE.Mesh(bodyGeo, bodyMat.clone());
+    m.material.color.offsetHSL(0, 0, -i * 0.03);
+    bodyMeshes.push(m);
+    scene.add(m);
+  }
+
+  placeFood();
+  syncMeshes();
+
+  ovTitle.textContent = 'Готов?';
+  ovText.textContent = 'Ты — змейка. Собирай красные сферы, не врезайся в стены и в себя.';
+  ovScore.style.display = 'none';
+  ovHint.textContent = 'Нажми ⏸ или Пробел, чтобы начать';
+  overlay.classList.add('show');
+}
+
+function placeFood() {
+  let p;
+  let guard = 0;
+  do {
+    p = {
+      x: Math.floor(Math.random() * COLS),
+      y: Math.floor(Math.random() * ROWS)
+    };
+    guard++;
+  } while (snake.some(s => s.x === p.x && s.y === p.y) && guard < 1000);
+  food = p;
+
+  if (!foodMesh) {
+    foodMesh = new THREE.Mesh(foodGeo, foodMat);
+    scene.add(foodMesh);
+  }
+  const w = cellToWorld(food.x, food.y);
+  foodMesh.position.copy(w);
+  foodMesh.position.y = 0.55;
+}
+
+function syncMeshes() {
+  // голова
+  const head = snake[0];
+  const hw = cellToWorld(head.x, head.y);
+  headMesh.position.copy(hw);
+  // наклон головы по направлению (нос смотрит вперёд)
+  headMesh.rotation.y = Math.atan2(dir.x, dir.y);
+
+  // тело — позиции по сегментам
+  for (let i = 1; i < snake.length; i++) {
+    const m = bodyMeshes[i - 1];
+    if (!m) continue;
+    const w = cellToWorld(snake[i].x, snake[i].y);
+    m.position.copy(w);
+    m.position.y = 0.45;
+  }
+}
+
+function tickStep() {
+  // применить отложенный поворот
+  if (pendingDir.x !== -dir.x || pendingDir.y !== -dir.y) {
+    dir = { ...pendingDir };
+  }
+
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+
+  // стены
+  if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS) return endGame();
+
+  // тело (кроме хвоста)
+  for (let i = 0; i < snake.length - 1; i++) {
+    if (snake[i].x === head.x && snake[i].y === head.y) return endGame();
+  }
+
+  snake.unshift(head);
+
+  if (head.x === food.x && head.y === food.y) {
+    score += 10;
+    scoreEl.textContent = score;
+    lenEl.textContent = snake.length;
+
+    // новое тело
+    const m = new THREE.Mesh(bodyGeo, bodyMat.clone());
+    m.material.color.offsetHSL(0, 0, -((snake.length) * 0.02) % 0.3);
+    bodyMeshes.push(m);
+    scene.add(m);
+
+    placeFood();
+
+    if (score > best) {
+      best = score;
+      bestEl.textContent = best;
+      localStorage.setItem('snake3dBest', best);
+    }
+
+    // ускорение
+    if (score % 50 === 0 && stepTime > SPEED_MIN) {
+      stepTime = Math.max(SPEED_MIN, stepTime - 0.015);
+    }
+  } else {
+    snake.pop();
+  }
+
+  syncMeshes();
+}
+
+function endGame() {
+  gameOver = true;
+  running = false;
+  ovTitle.textContent = '💥 Конец';
+  ovText.textContent = 'Ты врезался.';
+  ovScore.style.display = 'block';
+  ovScore.textContent = 'Счёт: ' + score;
+  ovHint.textContent = 'Жми «Заново» или Пробел';
+  overlay.classList.add('show');
+}
+
+function togglePause() {
+  if (gameOver) return;
+  running = !running;
+  if (running) {
+    overlay.classList.remove('show');
+    lastTime = performance.now();
+  } else {
+    ovTitle.textContent = '⏸ Пауза';
+    ovText.textContent = 'Продолжим?';
+    ovScore.style.display = 'none';
+    ovHint.textContent = 'Нажми ⏸ или Пробел';
+    overlay.classList.add('show');
+  }
+}
+
+// ===== Камера от первого лица =====
+const camForward = new THREE.Vector3();
+const camTarget = new THREE.Vector3();
+
+function updateCamera() {
+  const head = snake[0];
+  const hw = cellToWorld(head.x, head.y);
+
+  // камера чуть позади головы, на уровне глаз
+  const eyeY = 0.75;
+  // смещение назад относительно направления взгляда
+  const backX = -dir.x * 0.35;
+  const backZ = -dir.y * 0.35;
+
+  camera.position.set(hw.x + backX, eyeY, hw.z + backZ);
+
+  // смотрим вперёд по направлению движения
+  camTarget.set(hw.x + dir.x * 4, eyeY, hw.z + dir.y * 4);
+  camera.lookAt(camTarget);
+}
+
+// свет следует за головой
+function updateLights() {
+  const hw = headMesh.position;
+  headLight.position.set(hw.x + dir.x * 1.2, 1.4, hw.z + dir.y * 1.2);
+
+  // красный свет у еды
+  if (foodMesh) {
+    backLight.position.copy(foodMesh.position);
+    backLight.position.y = 1.2;
+  }
+}
+
+// ===== Ввод =====
+function setDir(d) {
+  if (d === 'pause') { togglePause(); return; }
+  if (!running || gameOver) {
+    // если стоим на паузе — снимаем паузу при попытке движения
+    if (!gameOver && !running) togglePause();
+  }
+  const map = {
+    up:    { x: 0, y: -1 },
+    down:  { x: 0, y: 1 },
+    left:  { x: -1, y: 0 },
+    right: { x: 1, y: 0 }
+  };
+  const nd = map[d];
+  if (!nd) return;
+  // нельзя развернуться на 180
+  if (nd.x === -dir.x && nd.y === -dir.y) return;
+  pendingDir = nd;
+}
+
+document.querySelectorAll('.dpad button').forEach(btn => {
+  const d = btn.dataset.dir;
+  const press = e => { e.preventDefault(); setDir(d); };
+  btn.addEventListener('touchstart', press, { passive: false });
+  btn.addEventListener('mousedown', press);
+});
+
+document.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowup' || k === 'w')    { setDir('up');    e.preventDefault(); }
+  else if (k === 'arrowdown' || k === 's')  { setDir('down');  e.preventDefault(); }
+  else if (k === 'arrowleft' || k === 'a')  { setDir('left');  e.preventDefault(); }
+  else if (k === 'arrowright' || k === 'd') { setDir('right'); e.preventDefault(); }
+  else if (k === ' ') { togglePause(); e.preventDefault(); }
+});
+
+// свайпы по экрану
+let tStart = null;
+renderer.domElement.addEventListener('touchstart', e => {
+  tStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}, { passive: true });
+renderer.domElement.addEventListener('touchend', e => {
+  if (!tStart) return;
+  const dx = e.changedTouches[0].clientX - tStart.x;
+  const dy = e.changedTouches[0].clientY - tStart.y;
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+  if (Math.max(ax, ay) > 22) {
+    if (ax > ay) setDir(dx > 0 ? 'right' : 'left');
+    else setDir(dy > 0 ? 'down' : 'up');
+  }
+  tStart = null;
+}, { passive: true });
+
+document.getElementById('restart').addEventListener('click', init);
+
+// ===== Ресайз =====
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ===== Игровой цикл =====
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+
+  if (running && !gameOver) {
+    acc += dt;
+    while (acc >= stepTime) {
+      acc -= stepTime;
+      tickStep();
+      if (gameOver) break;
+    }
+  }
+
+  // анимация еды (вращение + пульс)
+  if (foodMesh) {
+    foodMesh.rotation.y += dt * 2;
+    const s = 1 + Math.sin(now * 0.005) * 0.12;
+    foodMesh.scale.setScalar(s);
+  }
+
+  updateCamera();
+  updateLights();
+  renderer.render(scene, camera);
+}
+
+init();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
